@@ -1,0 +1,5 @@
+server/data/
+server/deploy.env
+server/node_modules/
+server/test/out/
+*.tmp

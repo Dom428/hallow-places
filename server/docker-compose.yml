@@ -1,0 +1,43 @@
+# Hallow Places on your own machine (NAS, mini PC...). See NAS-DEPLOY.md in the repo.
+#
+#   docker compose up -d --build
+#   docker logs hallow-places        <- the one-time setup code for the admin password is here
+#
+# Then http://<this machine>:8091/healthz should answer {"ok":true,...}.
+# Your settings go in a file called .env next to this one (deploy-nas.mjs never overwrites it), e.g.
+#   PUBLIC_URL=https://places.example.com
+#   TZ=America/New_York
+services:
+  hallow-places:
+    build: .
+    image: hallow-places:local
+    container_name: hallow-places
+    restart: unless-stopped
+    ports:
+      - "8091:8080"
+    environment:
+      # The address phones and browsers use (goes into the phones' setup QR codes). Can also be set on the Admin page.
+      PUBLIC_URL: "${PUBLIC_URL:-}"
+      # Time zone for "hasn't left by 08:15" rules, quiet hours and the daily history files (first start only;
+      # change it later on the Admin page).
+      TZ: "${TZ:-UTC}"
+      # Behind a Cloudflare Tunnel: count failed sign-ins per real visitor (CF-Connecting-IP), trusted only from Docker networks.
+      TRUST_PROXY: "${TRUST_PROXY:-cloudflare}"
+      # Optional: set the admin password on first start instead of using the setup code from the log.
+      # ADMIN_PASSWORD: ""
+      # LOG: "off"        # no log lines at all (locations, tokens and passwords are never logged anyway)
+    volumes:
+      - hallow-places-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.5"
+volumes:
+  hallow-places-data:

@@ -1,0 +1,13 @@
+{
+  "name": "hallow-places",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hallow Places: private family location sharing on your own server, for the OwnTracks app. No dependencies.",
+  "type": "module",
+  "main": "server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-timeout=60000 test/secretbox.test.mjs test/qr.test.mjs test/owntracks.test.mjs test/geo.test.mjs test/alerts.test.mjs test/auth.test.mjs test/store.test.mjs test/server.test.mjs"
+  }
+}
