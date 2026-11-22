@@ -200,6 +200,7 @@ await step('map API: positions, Places, today\'s track and the feed; the paused 
 });
 
 await step('secrets never in the log, the state files or API answers', async () => {
+  app.store.flush();   // state.json is normally written a second after a change
   const all = logLines.join('\n') + fs.readFileSync(path.join(DATA, 'state.json'), 'utf8');
   assert.ok(!all.includes('standin-secret-token') && !all.includes('tk_standin_secret'));
   for (const id in phones) assert.ok(!all.includes(phones[id].token) && !fs.readFileSync(path.join(DATA, 'config.json'), 'utf8').includes(phones[id].token));
