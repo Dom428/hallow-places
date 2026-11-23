@@ -1,6 +1,6 @@
 {
   "name": "hallow-places",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Hallow Places: private family location sharing on your own server, for the OwnTracks app. No dependencies.",
   "type": "module",

@@ -42,7 +42,7 @@ export function travel(r, from, to, every, a, b, { batt } = {}) {
 }
 
 // A made-up school day for "Mia" (UTC): home until 07:40 with jitter near the edge of Home, to School, School until
-// 15:00, then 3 h 20 min at a friend's (not a Place), home at 18:55. Battery runs down under 15 % at about 18:00 and is
+// 15:00, then 3 h 20 min at a friend's (not a Place), home at 18:55. Battery runs down under 15% at about 18:00 and is
 // charged from 19:30. A cell-tower fix (1.5 km accuracy) at 10:00 must be ignored.
 export function schoolDay(day0, seed = 7) {
   const r = rng(seed), H = h => day0 + Math.round(h * 3600);

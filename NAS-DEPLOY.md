@@ -106,7 +106,7 @@ again (or set **Public address** on the Admin page) - it goes into the phones' s
    the Places as OwnTracks regions automatically.
 5. **Where alerts go**: paste a Discord webhook URL (Server settings > Integrations > Webhooks) and/or an ntfy topic
    (ntfy.sh or your own ntfy server; use a long, hard-to-guess topic name, or an access token). **Send a test**.
-6. **Alert rules**: arrive / leave are on for everyone by default, plus battery under 15 % and no update for 12 hours.
+6. **Alert rules**: arrive / leave are on for everyone by default, plus battery under 15% and no update for 12 hours.
    Add "hasn't left Home by 08:15", "hasn't arrived at School by 08:45", "stays at an unknown place for 3 hours".
 
 ## Settings (environment variables)

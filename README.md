@@ -39,7 +39,7 @@ Tracking someone without their knowledge is wrong and in many places illegal. Do
     "left home / arrived home / left home". OwnTracks' own region events are used too, but **cross-checked** against
     the fix they come with.
   - **Rules**: "*hasn't left Home by 07:30*" and "*hasn't arrived at School by 08:45*" (on chosen weekdays), **battery
-    under X %**, **no update for N hours**, **stays at an unknown place for N hours**, and arrive / leave for chosen
+    under X%**, **no update for N hours**, **stays at an unknown place for N hours**, and arrive / leave for chosen
     people and Places.
   - **No spam**: each alert once (battery again only after charging or 5 points up; no-update again only after a new
     update), and the same arrive / leave not again within the cool-down (15 minutes).
@@ -102,6 +102,7 @@ Atlantic Ocean).
 
 ## What's new
 
+- **1.0.1** - Percentages read 45% instead of 45 %.
 - **1.0** - First release: the OwnTracks HTTP endpoint (location, transition; other types accepted and ignored) with
   per-phone tokens and payload encryption (pure-JS secretbox); the map web app with its own tile renderer, tracks,
   Places, light / dark and a phone layout; arrive / leave with hysteresis and cross-checked phone region events; rules

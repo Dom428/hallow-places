@@ -14,7 +14,7 @@ import { hashPassword, verifyPassword, newToken, tokenHash, tokenMatches, parseB
 import { parseMessage, toFix, placeForTransition, reply, friendItems, setWaypointsCmd, phoneConfig, inlineLink } from './lib/owntracks.js';
 import { encode as qrEncode, toSvg } from './lib/qr.js';
 
-export const VERSION = '1.0';
+export const VERSION = '1.0.1';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COLORS = ['#F07820', '#7A5CC0', '#2E9E6A', '#2F7FD8', '#D8436A', '#B8901E', '#1E9EA8', '#8C6A4A'];
 const FROM_TUNNEL = ip => /^(127\.|::1$|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
@@ -228,7 +228,7 @@ export function createServer(opts = {}) {
       r.days = Array.isArray(b.days) ? [...new Set(b.days.map(Number).filter(d => d >= 0 && d <= 6))].sort() : [];
       if (b.type === 'notArrived' && b.after) { if (!HM_RE.test(b.after)) throw new Error('"since" looks like 07:00'); r.after = b.after; }
     }
-    if (b.type === 'battery') { r.below = fin(b.below, 1, 99); if (r.below == null) throw new Error('battery: 1-99 %'); }
+    if (b.type === 'battery') { r.below = fin(b.below, 1, 99); if (r.below == null) throw new Error('battery: 1-99%'); }
     if (b.type === 'noUpdate' || b.type === 'stationary') { r.hours = fin(b.hours, 0.25, 168); if (r.hours == null) throw new Error('hours: 0.25-168'); }
     return r;
   }

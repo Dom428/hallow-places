@@ -39,7 +39,7 @@ let admin, mia, miaToken, leoToken;
 
 test('health, static files and security headers', async () => {
   const h = await call('GET', '/healthz');
-  assert.equal(h.json.ok, true); assert.equal(h.json.version, '1.0');
+  assert.equal(h.json.ok, true); assert.equal(h.json.version, '1.0.1');
   const page = await call('GET', '/');
   assert.equal(page.status, 200); assert.match(page.text, /app\.js/);
   assert.match(page.headers.get('content-security-policy'), /img-src 'self' data: https:\/\/tile\.openstreetmap\.org;/);
