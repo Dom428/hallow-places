@@ -1,6 +1,8 @@
 // A small slippy map (no Leaflet, no downloads): Web Mercator tiles as <img> elements, an SVG layer for accuracy
 // circles, Places and tracks, and HTML markers. Drag / pinch / wheel / double-click / buttons. Fractional zoom: tiles
 // of the nearest level are scaled. Only the tiles in view are loaded - no prefetching (OpenStreetMap's tile policy).
+// Several tile layers can be stacked (satellite + labels = Hybrid); each has its own tile size (256 or 512 px) and its
+// highest native level - past it the last level is scaled up instead of asking the provider for more.
 const TILE = 256;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const MAX_LAT = 85.05112878;
@@ -19,6 +21,7 @@ const NS = 'http://www.w3.org/2000/svg';
 export class TileMap {
   constructor(el, opts = {}) {
     this.el = el; this.opts = { maxZoom: 19, minZoom: 2, tileUrl: '', attribution: '', attributionUrl: '', ...opts };
+    this.layers = []; this.panes = [];   // layers: [{ url, tileSize, maxNative, attribution, attributionUrl, labels }]
     this.center = { lat: 0, lon: 0 }; this.zoom = 3;
     this.circles = []; this.lines = []; this.markers = [];
     this.tiles = new Map(); this.onclick = null; this.onmove = null;
@@ -35,12 +38,39 @@ export class TileMap {
     new ResizeObserver(() => this.draw()).observe(el);
   }
 
-  setOptions(o) { const t = this.opts.tileUrl; Object.assign(this.opts, o); if (t !== this.opts.tileUrl) { this.tilePane.innerHTML = ''; this.tiles.clear(); } this.setAttribution(); this.draw(); }
+  // one layer from the old single-URL options (for callers that only have a tile URL)
+  setOptions(o) {
+    Object.assign(this.opts, o);
+    if (o.tileUrl !== undefined) this.setLayers(o.tileUrl ? [{ url: o.tileUrl, tileSize: 256, maxNative: this.opts.maxZoom, attribution: this.opts.attribution, attributionUrl: this.opts.attributionUrl }] : [], { maxZoom: this.opts.maxZoom });
+    else { this.setAttribution(); this.draw(); }
+  }
+  // a whole style; the tiles are replaced only when the layers really changed. kind: street | satellite | hybrid
+  setLayers(layers, { maxZoom, kind = 'street' } = {}) {
+    const sig = JSON.stringify(layers.map(l => [l.url, l.tileSize, l.maxNative]));
+    if (maxZoom) this.opts.maxZoom = maxZoom;
+    this.el.classList.toggle('imagery', kind !== 'street');
+    this.el.dataset.style = kind;
+    if (sig !== this.layerSig) {
+      this.layerSig = sig;
+      this.layers = layers.map((l, i) => ({ tileSize: 256, maxNative: this.opts.maxZoom, ...l, i }));
+      this.tilePane.innerHTML = ''; this.tiles.clear();
+      this.panes = this.layers.map(l => { const d = div('tmap-layer' + (l.labels ? ' labels' : '')); this.tilePane.append(d); return d; });
+    }
+    if (this.zoom > this.opts.maxZoom) this.zoom = this.opts.maxZoom;
+    this.setAttribution(); this.draw();
+  }
+  // every layer's credit, as each provider asks: linked text, separated by |
   setAttribution() {
     this.attr.innerHTML = '';
-    if (!this.opts.attribution) return;
-    if (this.opts.attributionUrl) { const a = document.createElement('a'); a.href = this.opts.attributionUrl; a.target = '_blank'; a.rel = 'noopener'; a.textContent = this.opts.attribution; this.attr.append(a); }
-    else this.attr.textContent = this.opts.attribution;
+    const seen = new Set();
+    for (const l of this.layers) {
+      if (!l.attribution || seen.has(l.attribution)) continue;
+      seen.add(l.attribution);
+      if (this.attr.childNodes.length) this.attr.append(' | ');
+      if (l.attributionUrl) { const a = document.createElement('a'); a.href = l.attributionUrl; a.target = '_blank'; a.rel = 'noopener'; a.textContent = l.attribution; this.attr.append(a); }
+      else this.attr.append(l.attribution);
+    }
+    this.attr.classList.toggle('hidden', !this.attr.childNodes.length);
   }
   setView(lat, lon, zoom = this.zoom) { this.center = { lat, lon }; this.zoom = clamp(zoom, this.opts.minZoom, this.opts.maxZoom); this.draw(); }
   zoomBy(d, px) {
@@ -94,27 +124,29 @@ export class TileMap {
   render() {
     const { width: w, height: h } = this.size();
     this.svg.setAttribute('width', w); this.svg.setAttribute('height', h);
-    // tiles
-    const tz = clamp(Math.round(this.zoom), 0, this.opts.maxZoom), scale = 2 ** (this.zoom - tz), n = 2 ** tz;
-    const c = project(this.center.lat, this.center.lon, tz);
-    const left = c.x - w / 2 / scale, top = c.y - h / 2 / scale;
+    // tiles, layer by layer. A 512 px tile at level L covers what 256 px tiles cover at zoom L + 1.
     const want = new Set();
-    if (this.opts.tileUrl) {
-      for (let ty = Math.floor(top / TILE); ty <= Math.floor((top + h / scale) / TILE); ty++) {
+    for (const l of this.layers) {
+      const ts = l.tileSize || TILE, off = Math.round(Math.log2(ts / TILE));
+      const lvl = clamp(Math.round(this.zoom) - off, 0, Math.max(0, (l.maxNative ?? this.opts.maxZoom) - off));
+      const zl = lvl + off, scale = 2 ** (this.zoom - zl), n = 2 ** lvl;
+      const c = project(this.center.lat, this.center.lon, zl);
+      const left = c.x - w / 2 / scale, top = c.y - h / 2 / scale;
+      for (let ty = Math.floor(top / ts); ty <= Math.floor((top + h / scale) / ts); ty++) {
         if (ty < 0 || ty >= n) continue;
-        for (let tx = Math.floor(left / TILE); tx <= Math.floor((left + w / scale) / TILE); tx++) {
-          const key = `${tz}/${tx}/${ty}`; want.add(key);
+        for (let tx = Math.floor(left / ts); tx <= Math.floor((left + w / scale) / ts); tx++) {
+          const key = `${l.i}/${lvl}/${tx}/${ty}`; want.add(key);
           let img = this.tiles.get(key);
           if (!img) {
             img = document.createElement('img');
             img.alt = ''; img.draggable = false; img.decoding = 'async'; img.referrerPolicy = 'strict-origin-when-cross-origin';
             img.onerror = () => { img.classList.add('bad'); };
             img.onload = () => { img.classList.add('ok'); };
-            img.src = tileSrc(this.opts.tileUrl, tz, ((tx % n) + n) % n, ty);
-            this.tiles.set(key, img); this.tilePane.append(img);
+            img.src = tileSrc(l.url, lvl, ((tx % n) + n) % n, ty);
+            this.tiles.set(key, img); this.panes[l.i].append(img);
           }
-          img.style.left = (tx * TILE - left) * scale + 'px'; img.style.top = (ty * TILE - top) * scale + 'px';
-          img.style.width = img.style.height = TILE * scale + 0.5 + 'px';
+          img.style.left = (tx * ts - left) * scale + 'px'; img.style.top = (ty * ts - top) * scale + 'px';
+          img.style.width = img.style.height = ts * scale + 0.5 + 'px';
         }
       }
     }
@@ -184,7 +216,7 @@ export class TileMap {
   }
 }
 
-function tileSrc(t, z, x, y) {
+export function tileSrc(t, z, x, y) {
   return t.replace('{s}', 'abc'[(x + y) % 3]).replace('{z}', z).replace('{x}', x).replace('{y}', y).replace('{r}', '');
 }
 const wrapLon = l => ((l + 540) % 360) - 180;

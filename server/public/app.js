@@ -10,6 +10,9 @@ const ICON = {
   fit: '<svg viewBox="0 0 24 24"><path d="M3 8V3h5M21 8V3h-5M3 16v5h5M21 16v5h-5"/></svg>',
 };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const STYLES = [['street', 'Street'], ['satellite', 'Satellite'], ['hybrid', 'Hybrid']];
+const daysBoxes = (prefix, on) => DAYS.map((d, i) => `<label><input type="checkbox" name="${prefix}${i}" ${on(i) ? 'checked' : ''}>${d}</label>`).join('');
+const daysOf = (f, prefix) => DAYS.map((_, i) => f[prefix + i]?.checked ? i : -1).filter(i => i >= 0);
 
 const api = {
   async req(method, path, body) {
@@ -78,9 +81,10 @@ function showLogin(needsSetup) {
         : '<label>Name<input name="user" autocomplete="username" autocapitalize="none" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label>'}
       <button class="accent" type="submit">${needsSetup ? 'Set password' : 'Sign in'}</button>
       <div class="msg" role="status"></div>
-    </form></div></div>`);
+    </form>${T.session?.demo ? '<button class="demo" type="button" id="demo">Look at the demo (a made-up family)</button><p class="small muted">Demo mode is on: the demo shows invented people, Places and alerts - never anyone real.</p>' : ''}</div></div>`);
   document.body.append(card);
   const f = $('form', card);
+  $('#demo', card)?.addEventListener('click', async () => { try { await api.post('/api/demo'); location.reload(); } catch (err) { $('.msg', card).textContent = err.message; } });
   f.addEventListener('submit', async e => {
     e.preventDefault();
     const d = Object.fromEntries(new FormData(f));
@@ -97,8 +101,8 @@ async function showApp() {
   const app = el(`<div id="app">
     <header class="top">
       <div class="brand"><img src="icon.svg" alt=""><span><b>HALLOW</b> PLACES</span></div>
-      <nav><button data-view="map">Map</button>${s.admin ? '' : '<button data-view="me">Me</button>'}${s.admin ? '<button data-view="admin">Admin</button>' : ''}</nav>
-      <div class="spacer"></div>
+      <nav><button data-view="map">Map</button>${s.admin || s.demoViewer ? '' : '<button data-view="me">Me</button>'}${s.admin ? '<button data-view="admin">Admin</button>' : ''}</nav>
+      <div class="spacer"></div>${s.demo ? '<span class="demotag" title="The map shows a made-up family">DEMO</span>' : ''}
       <button class="iconbtn" id="theme" aria-label="Light or dark"></button>
       <button class="iconbtn" id="signout" title="Sign out" aria-label="Sign out">${ICON.out}</button>
     </header>
@@ -114,10 +118,14 @@ async function showApp() {
   fitBtn.classList.add('fitbtn');
   fitBtn.onclick = () => fitAll();
   $('#mapwrap').append(fitBtn);
+  // Street / Satellite / Hybrid: each browser remembers its own choice; the admin picks what new viewers see first
+  const sw = el(`<div class="stylesw" role="group" aria-label="Map style">${STYLES.map(([k, n]) => `<button type="button" data-style="${k}" aria-pressed="false">${n}</button>`).join('')}</div>`);
+  sw.querySelectorAll('button').forEach(b => b.onclick = () => { localStorage.setItem('hp-style', b.dataset.style); applyStyle(); });
+  $('#mapwrap').append(sw);
   T.map.onclick = (lat, lon) => { if (T.view === 'admin' && T.pickPlace) T.pickPlace(lat, lon); };
   await refresh();
   fitAll();
-  const start = location.pathname === '/admin' && s.admin ? 'admin' : location.pathname === '/me' && !s.admin ? 'me' : 'map';
+  const start = location.pathname === '/admin' && s.admin ? 'admin' : location.pathname === '/me' && !s.admin && !s.demoViewer ? 'me' : 'map';
   setView(start);
   T.timer = setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 15000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh().catch(() => {}); });
@@ -133,12 +141,23 @@ function setView(v) {
   if (v === 'map') renderSide(); else if (v === 'me') renderMe(); else renderAdmin();
 }
 
+function currentStyle() {
+  const pick = localStorage.getItem('hp-style'), m = T.data.map;
+  return m.styles[pick] ? pick : m.styles[m.defaultStyle] ? m.defaultStyle : 'street';
+}
+function applyStyle() {
+  const st = currentStyle(), def = T.data.map.styles[st];
+  T.map.setLayers(def.layers, { maxZoom: def.maxZoom, kind: st });
+  document.querySelectorAll('.stylesw button').forEach(b => { b.classList.toggle('on', b.dataset.style === st); b.setAttribute('aria-pressed', String(b.dataset.style === st)); });
+}
+
 async function refresh() {
   const d = await api.get('/api/map');
-  const tilesChanged = !T.data || T.data.map.tileUrl !== d.map.tileUrl;
   T.data = d;
-  T.map.setOptions({ tileUrl: d.map.tileUrl, attribution: d.map.attribution, attributionUrl: d.map.attributionUrl, maxZoom: d.map.maxZoom });
-  if (tilesChanged) T.map.draw();
+  applyStyle();
+  const badge = $('.demobadge');
+  if (d.demo && !badge) $('#mapwrap').append(el('<div class="demobadge" title="Everyone and everything on this map is made up">DEMO - made-up family</div>'));
+  else if (!d.demo && badge) badge.remove();
   if (T.selected && T.view === 'map') await loadTrack(T.selected, T.trackDate, true);
   drawMap();
   if (T.view === 'map') renderSide();
@@ -204,6 +223,7 @@ function personLine(p) {
 function renderSide() {
   const d = T.data, side = $('#side');
   side.innerHTML = '';
+  if (d.demo) side.append(el(`<div class="demobar"><b>Demo mode.</b> These people, Places and alerts are made up and move on their own, so you can try the map, the satellite view and the alerts before any phone is set up. ${T.session.admin ? 'Real people are hidden (not deleted) until you turn the demo off on the Admin page.' : ''}</div>`));
   side.append(el('<h2>Family</h2>'));
   if (!d.people.length) side.append(el(`<div class="empty">Nobody yet.${T.session.admin ? ' Add people on the Admin page.' : ''}</div>`));
   for (const p of d.people) {
@@ -230,7 +250,7 @@ function renderSide() {
   if (!d.feed.length) side.append(el('<div class="empty">No alerts yet. Arrivals, departures and rule alerts show here.</div>'));
   else {
     const ul = el('<ul class="feed"></ul>');
-    for (const a of d.feed.slice(0, 40)) ul.append(el(`<li><span class="dot ${esc(a.kind)}"></span><div><div>${esc(a.text)}</div><div class="when">${esc(ago(a.ts))}${a.pushed ? ' · sent' : ''}${a.quiet ? ' · quiet hours, not sent' : ''}</div></div></li>`));
+    for (const a of d.feed.slice(0, 40)) ul.append(el(`<li><span class="dot ${esc(a.kind)}"></span><div><div>${esc(a.text)}</div><div class="when">${esc(ago(a.ts))}${a.pushed ? ' · sent' : ''}${a.wouldPush && !a.quiet ? ' · would be sent (demo)' : ''}${a.quiet ? ' · quiet hours, not sent' : ''}</div></div></li>`));
     side.append(ul);
   }
 }
@@ -259,9 +279,10 @@ async function renderMe() {
   $('#setup', ph).onclick = async () => showSetup(await api.post('/api/me/phone', {}), m.name);
   side.append(ph);
   // quiet hours
-  const q = el(`<div class="box"><b>Quiet hours</b><p class="small muted">Alerts about you still show here, but aren't sent to Discord or ntfy in these hours.</p>
-    <div class="rowf"><label class="field">From<input type="time" id="qf" value="${esc(m.quiet?.from || '')}"></label><label class="field">To<input type="time" id="qt" value="${esc(m.quiet?.to || '')}"></label><button id="qs">Save</button></div><div class="msg" id="qm"></div></div>`);
-  $('#qs', q).onclick = async () => { try { const f = $('#qf', q).value, t = $('#qt', q).value; await api.post('/api/me/quiet', { quiet: f || t ? { from: f, to: t } : null }); $('#qm', q).className = 'msg ok'; $('#qm', q).textContent = 'Saved'; } catch (e) { $('#qm', q).className = 'msg'; $('#qm', q).textContent = e.message; } };
+  const q = el(`<form class="box"><b>Quiet hours</b><p class="small muted">Alerts about you still show here, but aren't sent to Discord or ntfy in these hours (except rules your admin marked urgent).</p>
+    <div class="rowf"><label class="field">From<input type="time" id="qf" value="${esc(m.quiet?.from || '')}"></label><label class="field">To<input type="time" id="qt" value="${esc(m.quiet?.to || '')}"></label><button type="button" id="qs">Save</button></div>
+    <div class="small muted subhead">Starting on</div><div class="days">${daysBoxes('qd', i => !m.quiet?.days || m.quiet.days.includes(i))}</div><div class="msg" id="qm"></div></form>`);
+  $('#qs', q).onclick = async () => { try { const f = $('#qf', q).value, t = $('#qt', q).value; await api.post('/api/me/quiet', { quiet: f || t ? { from: f, to: t, days: daysOf(q, 'qd') } : null }); $('#qm', q).className = 'msg ok'; $('#qm', q).textContent = 'Saved'; } catch (e) { $('#qm', q).className = 'msg'; $('#qm', q).textContent = e.message; } };
   side.append(q);
   // history and password
   const h = el(`<div class="box"><b>Your history</b><p class="small muted">${m.days} day${m.days === 1 ? '' : 's'} kept. Deleting removes every saved position and every alert about you, at once.</p>
@@ -294,6 +315,13 @@ async function renderAdmin() {
   side.innerHTML = '';
   const nameOf = id => id === '*' ? 'anyone' : A.people.find(p => p.id === id)?.name || '?';
   const placeOf = id => id === '*' ? 'any Place' : A.places.find(p => p.id === id)?.name || '?';
+  const st = A.settings;
+
+  // demo mode
+  const demoBox = el(`<div class="box ${A.demo.on ? 'demobar' : ''}"><div class="big"><b>Demo mode</b><span class="spacer"></span>${A.demo.fromEnv ? '<span class="pill warn">on (DEMO=1 on the server)</span>' : `<button type="button" class="${A.demo.on ? '' : 'accent'}" id="demotoggle">${A.demo.on ? 'Turn the demo off' : 'Turn the demo on'}</button>`}</div>
+    <p class="small muted">${A.demo.on ? 'The map shows a made-up family moving along made-up routes, with made-up Places and alerts (never pushed). Your real people, Places and history below are untouched and hidden from the map until the demo is off. Visitors can look at the demo without signing in.' : 'Fills the map with a made-up family, Places and alerts, so you can see everything before any phone is set up. It never mixes with real data and is never pushed to Discord or ntfy.'}</p></div>`);
+  $('#demotoggle', demoBox)?.addEventListener('click', async () => { await api.post('/api/admin/settings', { demo: !A.demo.on }); location.reload(); });
+  side.append(demoBox);
 
   // people
   side.append(el('<h2>People</h2>'));
@@ -348,10 +376,11 @@ async function renderAdmin() {
     leave: `When ${nameOf(r.person)} leaves ${placeOf(r.place)}`,
     notLeft: `If ${nameOf(r.person)} hasn't left ${placeOf(r.place)} by ${r.time}`,
     notArrived: `If ${nameOf(r.person)} hasn't arrived at ${placeOf(r.place)} by ${r.time}${r.after ? ' (since ' + r.after + ')' : ''}`,
-    battery: `When ${nameOf(r.person)}'s battery drops under ${r.below}%`,
+    battery: `When ${nameOf(r.person)}'s battery drops under ${r.below}%${r.critical ? ' (and again under ' + r.critical + '%)' : ''}`,
     noUpdate: `When there's no update from ${nameOf(r.person)} for ${r.hours} h`,
     stationary: `When ${nameOf(r.person)} stays at an unknown place for ${r.hours} h`,
-  }[r.type] + (r.days && r.days.length && r.days.length < 7 ? ' on ' + r.days.map(d => DAYS[d]).join(', ') : ''));
+  }[r.type] + (r.days && r.days.length && r.days.length < 7 ? ' on ' + r.days.map(d => DAYS[d]).join(', ') : '')
+    + (r.from || r.to ? `, ${r.from || '00:00'}-${r.to || '24:00'}` : '') + (r.skipHolidays ? ', not on holidays' : '') + (r.urgent ? ' - urgent (even in quiet hours)' : ''));
   for (const r of A.rules) {
     const it = el(`<div class="item"><input type="checkbox" aria-label="On" ${r.enabled !== false ? 'checked' : ''}><div class="grow">${esc(ruleText(r))}</div><button class="link" data-a="del">Delete</button></div>`);
     it.querySelector('input').onchange = async e => { await api.post('/api/admin/rule', { ...r, enabled: e.target.checked }); };
@@ -365,25 +394,29 @@ async function renderAdmin() {
     <label class="field">Who<select name="person">${opts(A.people, 'Anyone')}</select></label></div>
     <div class="rowf"><label class="field" data-f="place">Place<select name="place">${opts(A.places, 'Any Place')}</select></label>
     <label class="field" data-f="time">By<input type="time" name="time" value="08:30"></label><label class="field" data-f="after">Since (optional)<input type="time" name="after"></label>
-    <label class="field" data-f="below">Under (%)<input type="number" name="below" min="1" max="99" value="15"></label><label class="field" data-f="hours">Hours<input type="number" name="hours" min="0.25" max="168" step="0.25" value="3"></label></div>
-    <div class="days" data-f="days">${DAYS.map((d, i) => `<label><input type="checkbox" name="d${i}" ${i > 0 && i < 6 ? 'checked' : ''}>${d}</label>`).join('')}</div>
+    <label class="field" data-f="below">Under (%)<input type="number" name="below" min="1" max="99" value="15"></label><label class="field" data-f="below">Critical (%, optional)<input type="number" name="critical" min="1" max="98" placeholder="5"></label><label class="field" data-f="hours">Hours<input type="number" name="hours" min="0.25" max="168" step="0.25" value="3"></label></div>
+    <div class="rowf" data-f="window"><label class="field">Only from (optional)<input type="time" name="from"></label><label class="field">until<input type="time" name="to"></label></div>
+    <div class="days" data-f="days">${daysBoxes('d', i => i > 0 && i < 6)}</div>
+    <label class="check" data-f="holidays"><input type="checkbox" name="skipHolidays"> Not on holidays (the dates under Settings) - with Mon-Fri this is "only on school days"</label>
+    <label class="check"><input type="checkbox" name="urgent"> Urgent: push even in the person's quiet hours</label>
     <div class="actions"><button class="accent">Add rule</button></div><div class="msg"></div></form>`);
   const showFields = () => {
-    const t = rf.type.value, need = { arrive: ['place'], leave: ['place'], notLeft: ['place', 'time', 'days'], notArrived: ['place', 'time', 'after', 'days'], battery: ['below'], noUpdate: ['hours'], stationary: ['hours'] }[t];
+    const t = rf.type.value, need = { arrive: ['place', 'days', 'window', 'holidays'], leave: ['place', 'days', 'window', 'holidays'], notLeft: ['place', 'time', 'days', 'holidays'], notArrived: ['place', 'time', 'after', 'days', 'holidays'], battery: ['below'], noUpdate: ['hours'], stationary: ['hours'] }[t];
     rf.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('hidden', !need.includes(x.dataset.f)));
     if (t === 'noUpdate' && rf.hours.value === '3') rf.hours.value = '6';
   };
   rf.type.onchange = showFields; showFields();
   rf.onsubmit = async e => {
     e.preventDefault();
-    const d = { type: rf.type.value, person: rf.person.value, place: rf.place.value, time: rf.time.value, after: rf.after.value || undefined, below: rf.below.value, hours: rf.hours.value, days: DAYS.map((_, i) => rf['d' + i].checked ? i : -1).filter(i => i >= 0) };
+    const t = rf.type.value, sched = t === 'arrive' || t === 'leave';
+    const d = { type: t, person: rf.person.value, place: rf.place.value, time: rf.time.value, after: rf.after.value || undefined, below: rf.below.value, critical: rf.critical.value || undefined, hours: rf.hours.value, days: daysOf(rf, 'd'),
+      from: sched ? rf.from.value || undefined : undefined, to: sched ? rf.to.value || undefined : undefined, skipHolidays: rf.skipHolidays.checked, urgent: rf.urgent.checked };
     try { await api.post('/api/admin/rule', d); renderAdmin(); } catch (err) { $('.msg', rf).textContent = err.message; }
   };
   rb.append(rf);
   side.append(rb);
 
   // delivery
-  const st = A.settings;
   side.append(el('<h2>Where alerts go</h2>'));
   const db = el(`<form class="box"><p class="small muted">Every alert shows in the Alerts list. Rule alerts are also pushed here. The webhook and token are kept on the server only and never shown again.</p>
     <label class="field">Discord webhook URL ${st.discordWebhookSet ? '<span class="pill ok">set</span>' : ''}<input name="discordWebhook" type="password" autocomplete="off" placeholder="${st.discordWebhookSet ? 'leave empty to keep' : 'https://discord.com/api/webhooks/...'}"></label>
@@ -404,17 +437,49 @@ async function renderAdmin() {
   };
   side.append(db);
 
+  // map: styles, satellite source, keys, tile cache
+  side.append(el('<h2>Map</h2>'));
+  const sat = A.satellites.find(x => x.id === st.satellite) || A.satellites[0];
+  const mb = el(`<form class="box"><div class="rowf"><label class="field">New viewers see first<select name="mapStyle">${STYLES.map(([k, n]) => `<option value="${k}"${st.mapStyle === k ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label class="field">Satellite source<select name="satellite">${A.satellites.map(x => `<option value="${x.id}"${x.id === st.satellite ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label></div>
+    <p class="small muted" data-a="satnote"></p>
+    ${A.satellites.filter(x => x.key).map(x => `<div class="keyhelp" data-key="${x.id}"><label class="field">${esc(x.name.replace(/ \(.*\)$/, ''))} key ${st[x.key + 'Set'] ? '<span class="pill ok">set</span>' : ''}<input name="${x.key}" type="password" autocomplete="off" placeholder="${st[x.key + 'Set'] ? 'leave empty to keep' : 'paste the key'}"></label>
+      ${st[x.key + 'Set'] ? `<label class="check"><input type="checkbox" name="clear-${x.key}"> Remove this key</label>` : ''}
+      <details class="small"><summary>How to get a free key</summary><ol>${x.help.map(h => `<li>${esc(h)}</li>`).join('')}</ol></details></div>`).join('')}
+    <label class="check"><input type="checkbox" name="tileCache" ${st.tileCache !== false ? 'checked' : ''}> Keep map tiles on the server (OpenStreetMap, EOxCloudless, USGS: fewer requests to them, as their terms ask)</label>
+    <div class="rowf"><label class="field">Tile cache size (MB)<input name="tileCacheMB" type="number" min="20" max="20000" value="${st.tileCacheMB}"></label></div>
+    <p class="small muted">The keyed sources (Esri, MapTiler) don't allow caching: those tiles go from each browser straight to the provider, with the key in the address - so restrict the key to your Places address. Keys stay on this server and are never shown again.</p>
+    <div class="actions"><button class="accent">Save map</button></div><div class="msg"></div></form>`);
+  const satNote = () => {
+    const x = A.satellites.find(y => y.id === mb.satellite.value);
+    mb.querySelector('[data-a=satnote]').textContent = ({ eox: 'No key. Worldwide, about 10 m per pixel (streets, parks and fields - not single houses). Free for personal, non-commercial use with the credit shown on the map (CC BY-NC-SA 4.0).', usgs: 'No key. The 48 US states only, about 1 m per pixel. Public domain (US government).', esri: 'Sharp worldwide imagery. Needs a free ArcGIS Location Platform key (2 million tiles a month free).', maptiler: 'Sharp worldwide imagery. Needs a free MapTiler key (free plan: non-commercial, monthly limit).' })[x.id] + ' Credit: ' + x.attribution;
+    mb.querySelectorAll('[data-key]').forEach(k => k.classList.toggle('hidden', k.dataset.key !== x.id));
+  };
+  mb.satellite.onchange = satNote; satNote();
+  mb.onsubmit = async e => {
+    e.preventDefault();
+    const d = { mapStyle: mb.mapStyle.value, tileCache: mb.tileCache.checked, tileCacheMB: mb.tileCacheMB.value };
+    for (const x of A.satellites.filter(y => y.key)) { const v = mb[x.key].value.trim(); if (v) d[x.key] = v; else if (mb['clear-' + x.key]?.checked) d[x.key] = ''; }
+    d.satellite = mb.satellite.value;
+    try { await api.post('/api/admin/settings', d); await refresh(); renderAdmin(); } catch (err) { $('.msg', mb).className = 'msg'; $('.msg', mb).textContent = err.message; }
+  };
+  side.append(mb);
+
   // settings
   side.append(el('<h2>Settings</h2>'));
   const sb = el(`<form class="box">
     <div class="rowf"><label class="field">Keep history (days)<input name="retentionDays" type="number" min="1" max="3650" value="${st.retentionDays}"></label><label class="field">Time zone<input name="timeZone" value="${esc(st.timeZone)}" placeholder="America/New_York"></label></div>
     <label class="field">Public address<input name="publicUrl" value="${esc(st.publicUrl)}" placeholder="https://places.example.com"></label>
-    <label class="field">Map tiles URL<input name="tileUrl" value="${esc(st.tileUrl)}"></label>
+    <label class="field">Street map tiles URL<input name="tileUrl" value="${esc(st.tileUrl)}"></label>
     <div class="rowf"><label class="field">Tiles credit<input name="tileAttribution" value="${esc(st.tileAttribution)}"></label><label class="field">Max zoom<input name="maxZoom" type="number" min="1" max="22" value="${st.maxZoom}"></label></div>
     <label class="field">Credit link<input name="tileAttributionUrl" value="${esc(st.tileAttributionUrl)}"></label>
     <h2>Arrive / leave tuning</h2>
-    <div class="rowf"><label class="field">Ignore fixes worse than (m)<input name="maxAccuracy" type="number" min="10" max="2000" value="${st.maxAccuracy}"></label><label class="field">Left after (min) outside<input name="leaveMinutes" type="number" min="1" max="60" value="${st.leaveMinutes}"></label></div>
+    <p class="small muted">GPS jitter protection: a fix only counts when it is accurate enough; "arrived" needs a short dwell inside; "left" needs fixes past a wider exit circle (the hysteresis radius) for a few minutes.</p>
+    <div class="rowf"><label class="field">Ignore fixes worse than (m)<input name="maxAccuracy" type="number" min="10" max="2000" value="${st.maxAccuracy}"></label><label class="field">Arrived after (min) inside<input name="arriveMinutes" type="number" min="0" max="30" step="0.5" value="${st.arriveMinutes}"></label></div>
+    <div class="rowf"><label class="field">Exit circle (x radius)<input name="exitFactor" type="number" min="1" max="4" step="0.1" value="${st.exitFactor}"></label><label class="field">...at least radius + (m)<input name="exitExtra" type="number" min="0" max="1000" value="${st.exitExtra}"></label></div>
+    <div class="rowf"><label class="field">Left after (min) outside<input name="leaveMinutes" type="number" min="1" max="60" value="${st.leaveMinutes}"></label></div>
     <div class="rowf"><label class="field">...or this far past the edge (m)<input name="leaveMeters" type="number" min="50" max="5000" value="${st.leaveMeters}"></label><label class="field">Same alert again after (min)<input name="cooldownMinutes" type="number" min="0" max="1440" value="${st.cooldownMinutes}"></label></div>
+    <label class="field">Holidays (no school / work) for rules marked "not on holidays"<input name="holidays" value="${esc((st.holidays || []).join(' '))}" placeholder="2026-12-24 2026-12-25 2027-01-01"></label>
     <label class="check"><input type="checkbox" name="familyInOwnTracks" ${st.familyInOwnTracks ? 'checked' : ''}> Show the family in the OwnTracks app too</label>
     <div class="actions"><button class="accent">Save settings</button></div><div class="msg"></div></form>`);
   sb.onsubmit = async e => {
@@ -436,6 +501,7 @@ function personDialog(p) {
     ${p ? '' : '<label class="field">User name (for signing in; letters, digits, -)<input name="user" maxlength="24" autocapitalize="none" placeholder="from the name"></label>'}
     <div class="rowf"><label class="field">Colour<input name="color" type="color" value="${esc(p?.color || '#F07820')}"></label><label class="field">${p?.hasPassword ? 'New password (empty = keep)' : 'Password to sign in (optional)'}<input name="password" type="password" minlength="8" autocomplete="new-password"></label></div>
     <div class="rowf"><label class="field">Quiet hours from<input name="qf" type="time" value="${esc(p?.quiet?.from || '')}"></label><label class="field">to<input name="qt" type="time" value="${esc(p?.quiet?.to || '')}"></label></div>
+    <div class="small muted subhead">Quiet hours starting on</div><div class="days">${daysBoxes('qd', i => !p?.quiet?.days || p.quiet.days.includes(i))}</div>
     <label class="check"><input type="checkbox" name="encrypt" ${!p || p.encrypt ? 'checked' : ''}> Encrypt their phone's messages (recommended; needs a new phone setup when changed)</label>
     ${p?.hasPassword ? '<label class="check"><input type="checkbox" name="noLogin"> Remove their sign-in</label>' : ''}
     <div class="actions"><button class="accent">Save</button><button type="button" data-close>Cancel</button></div><div class="msg"></div>
@@ -446,7 +512,7 @@ function personDialog(p) {
     if (!p) f.color.value = ['#F07820', '#7A5CC0', '#2E9E6A', '#2F7FD8', '#D8436A', '#B8901E'][T.admin.people.length % 6];
     f.onsubmit = async e => {
       e.preventDefault();
-      const d = { id: p?.id, name: f.name.value, tid: f.tid.value, color: f.color.value, encrypt: f.encrypt.checked, quiet: f.qf.value || f.qt.value ? { from: f.qf.value, to: f.qt.value } : null };
+      const d = { id: p?.id, name: f.name.value, tid: f.tid.value, color: f.color.value, encrypt: f.encrypt.checked, quiet: f.qf.value || f.qt.value ? { from: f.qf.value, to: f.qt.value, days: daysOf(f, 'qd') } : null };
       if (!p) d.user = f.user.value;
       if (f.password.value) d.password = f.password.value;
       if (f.noLogin?.checked) d.noLogin = true;

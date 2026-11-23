@@ -26,6 +26,9 @@ services:
       # Optional: set the admin password on first start instead of using the setup code from the log.
       # ADMIN_PASSWORD: ""
       # LOG: "off"        # no log lines at all (locations, tokens and passwords are never logged anyway)
+      # Demo mode: the map shows a MADE-UP family instead of the real one (nothing of it is saved or pushed). Off by
+      # default; also on the Admin page. Leave it off once your family uses Hallow Places.
+      DEMO: "${DEMO:-}"
     volumes:
       - hallow-places-data:/data
     read_only: true

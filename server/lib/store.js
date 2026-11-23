@@ -14,10 +14,21 @@ export const SETTINGS_DEFAULTS = {
   maxZoom: 19,
   publicUrl: '',
   timeZone: 'UTC',
+  mapStyle: 'street',        // what a browser shows first: street | satellite | hybrid (each viewer can switch)
+  satellite: 'eox',          // satellite source, see lib/tiles.js: eox | usgs | esri | maptiler
+  esriKey: '',               // write-only, like the webhook: never shipped, never logged
+  maptilerKey: '',
+  tileCache: true,           // keep tiles of the built-in no-key sources on the server (data/tiles), as their terms allow
+  tileCacheMB: 500,
+  demo: false,               // a made-up family on the map instead of the real one (also: DEMO=1)
   maxAccuracy: 100,
+  arriveMinutes: 1,          // dwell: inside this long before "arrived"
+  exitFactor: 1.5,           // hysteresis: "left" only past max(radius x exitFactor, radius + exitExtra)
+  exitExtra: 50,
   leaveMinutes: 3,
   leaveMeters: 300,
   cooldownMinutes: 15,
+  holidays: [],              // YYYY-MM-DD days that rules marked "not on holidays" skip
   discordWebhook: '',
   ntfyServer: 'https://ntfy.sh',
   ntfyTopic: '',

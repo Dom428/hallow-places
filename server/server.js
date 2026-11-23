@@ -13,8 +13,10 @@ import { createNotifier, validUrl } from './lib/notify.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, tokenMatches, parseBasic, createSessions, createLimiter } from './lib/auth.js';
 import { parseMessage, toFix, placeForTransition, reply, friendItems, setWaypointsCmd, phoneConfig, inlineLink } from './lib/owntracks.js';
 import { encode as qrEncode, toSvg } from './lib/qr.js';
+import { PROVIDERS, SATELLITES, STYLES, KEY_HELP, resolveStyles, directOrigins, createTileCache } from './lib/tiles.js';
+import { createDemo } from './lib/demo.js';
 
-export const VERSION = '1.0.1';
+export const VERSION = '1.1';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COLORS = ['#F07820', '#7A5CC0', '#2E9E6A', '#2F7FD8', '#D8436A', '#B8901E', '#1E9EA8', '#8C6A4A'];
 const FROM_TUNNEL = ip => /^(127\.|::1$|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
@@ -32,6 +34,7 @@ export function config(env = process.env) {
     adminPassword: env.ADMIN_PASSWORD || '',
     timeZone: env.TZ || '',
     log: env.LOG !== 'off',
+    demo: /^(1|true|on|yes)$/i.test(String(env.DEMO || '')),   // made-up family on the map (lib/demo.js); off by default
   };
 }
 
@@ -62,6 +65,16 @@ export function createServer(opts = {}) {
 
   const notifier = createNotifier({ settings: S, log: m => log('push:', m) });
   const engine = createEngine({ state: store.state, cfg: () => C, now, onChange: store.saveState, deliver: a => notifier.send(a).catch(() => {}) });
+  const tileCache = createTileCache({ dir: cfg.dataDir, providers: { ...PROVIDERS, ...(opts.providers || {}) }, fetchImpl: opts.tileFetch || globalThis.fetch, now, log: m => log(m) });
+
+  // ---- demo mode: a made-up family in its own engine (lib/demo.js); never mixed with real data, never pushed
+  let demo = null;
+  const demoOn = () => !!(cfg.demo || S().demo);
+  function demoWorld() {
+    if (demoOn()) { if (!demo) { demo = createDemo({ timeZone: S().timeZone || 'UTC', now, liveMs: opts.demoLiveMs ?? 10000 }); log('demo mode on: the map shows a made-up family'); } return demo; }
+    if (demo) { demo.stop(); demo = null; log('demo mode off'); }
+    return null;
+  }
   const sessions = createSessions({ now });
   const loginFails = createLimiter({ max: 10, now });
   const pubFails = createLimiter({ max: 30, now });
@@ -81,14 +94,9 @@ export function createServer(opts = {}) {
   const isHttps = req => !!req.socket.encrypted || (FROM_TUNNEL(String(req.socket.remoteAddress || '').replace(/^::ffff:/, '')) && req.headers['x-forwarded-proto'] === 'https');
   const baseUrl = req => S().publicUrl || `${isHttps(req) ? 'https' : 'http'}://${String(req.headers.host || 'localhost').replace(/[^a-zA-Z0-9.:\-\[\]]/g, '')}`;
 
-  function tileOrigin() {
-    try {
-      const u = new URL(String(S().tileUrl).replace(/\{s\}/g, 'hallowsubdomain').replace(/\{[a-z]+\}/g, '0'));
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
-      const host = u.host.includes('hallowsubdomain') ? '*.' + u.host.split('.').slice(1).join('.') : u.host;
-      return `${u.protocol}//${host}`;
-    } catch { return ''; }
-  }
+  // tiles the browser loads straight from a provider (custom street tiles, keyed satellite sources); the built-in
+  // no-key sources come through this server's cache (/tiles/...), which is 'self'
+  const tileOrigin = () => directOrigins(resolveStyles(S())).join(' ');
   function headers(type, extra = {}) {
     return {
       'Content-Type': type,
@@ -97,7 +105,7 @@ export function createServer(opts = {}) {
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'strict-origin-when-cross-origin',   // the tile server gets our origin, as OSM's policy asks
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: ${tileOrigin()}; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self'; img-src ${['\'self\'', 'data:', tileOrigin()].filter(Boolean).join(' ')}; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       ...extra,
     };
   }
@@ -212,10 +220,13 @@ export function createServer(opts = {}) {
   // ---- validation helpers for the admin
   const str = (v, max) => String(v ?? '').trim().slice(0, max);
   const fin = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+  const daysFrom = d => Array.isArray(d) ? [...new Set(d.map(Number).filter(x => Number.isInteger(x) && x >= 0 && x <= 6))].sort() : [];
   function quietFrom(q) {
     if (!q || (!q.from && !q.to)) return null;
     if (!HM_RE.test(q.from) || !HM_RE.test(q.to)) throw new Error('quiet hours look like 22:00 - 07:00');
-    return { from: q.from, to: q.to };
+    const out = { from: q.from, to: q.to };
+    const days = daysFrom(q.days); if (days.length && days.length < 7) out.days = days;
+    return out;
   }
   function cleanRule(b) {
     if (!RULE_TYPES.includes(b.type)) throw new Error('unknown rule type');
@@ -225,10 +236,23 @@ export function createServer(opts = {}) {
     if (b.type === 'notLeft' || b.type === 'notArrived') {
       if (!HM_RE.test(b.time)) throw new Error('time looks like 08:15');
       r.time = b.time;
-      r.days = Array.isArray(b.days) ? [...new Set(b.days.map(Number).filter(d => d >= 0 && d <= 6))].sort() : [];
+      r.days = daysFrom(b.days);
       if (b.type === 'notArrived' && b.after) { if (!HM_RE.test(b.after)) throw new Error('"since" looks like 07:00'); r.after = b.after; }
     }
-    if (b.type === 'battery') { r.below = fin(b.below, 1, 99); if (r.below == null) throw new Error('battery: 1-99%'); }
+    // per-place schedules for arrive / leave: weekdays and an optional time window ("only on school days, 07:00-09:00")
+    if (b.type === 'arrive' || b.type === 'leave') {
+      const days = daysFrom(b.days); if (days.length && days.length < 7) r.days = days;
+      if (b.from || b.to) {
+        if ((b.from && !HM_RE.test(b.from)) || (b.to && !HM_RE.test(b.to))) throw new Error('times look like 07:00');
+        if (b.from) r.from = b.from; if (b.to) r.to = b.to;
+      }
+    }
+    if (['arrive', 'leave', 'notLeft', 'notArrived'].includes(b.type) && b.skipHolidays) r.skipHolidays = true;
+    if (b.urgent) r.urgent = true;   // pushed even in the person's quiet hours
+    if (b.type === 'battery') {
+      r.below = fin(b.below, 1, 99); if (r.below == null) throw new Error('battery: 1-99%');
+      if (b.critical !== undefined && b.critical !== '' && b.critical !== null) { r.critical = fin(b.critical, 1, 98); if (r.critical == null || r.critical >= r.below) throw new Error('critical battery: under the first line'); }
+    }
     if (b.type === 'noUpdate' || b.type === 'stationary') { r.hours = fin(b.hours, 0.25, 168); if (r.hours == null) throw new Error('hours: 0.25-168'); }
     return r;
   }
@@ -238,10 +262,11 @@ export function createServer(opts = {}) {
     const ip = clientIp(req);
     const sid = cookie(req, 'hp_session');
     const sess = sessions.get(sid);
-    const who = sess ? sess.who : null;
-    const me = who && who !== 'admin' ? person(who) : null;
-    if (who && who !== 'admin' && !me) { sessions.drop(sid); }
-    const signedIn = who === 'admin' || !!me;
+    let who = sess ? sess.who : null;
+    if (who === 'demo' && !demoOn()) { sessions.drop(sid); who = null; }   // a demo look ends with demo mode
+    const me = who && who !== 'admin' && who !== 'demo' ? person(who) : null;
+    if (who && who !== 'admin' && who !== 'demo' && !me) { sessions.drop(sid); }
+    const signedIn = who === 'admin' || who === 'demo' || !!me;
     let body = {};
     if (req.method === 'POST') {
       if (req.headers['x-hallow'] !== '1') return fail(res, 403, 'missing header');   // no cross-site form posts
@@ -250,7 +275,12 @@ export function createServer(opts = {}) {
     } else if (req.method !== 'GET') return fail(res, 405, 'method');
     const route = req.method + ' ' + u.pathname;
 
-    if (route === 'GET /api/session') return json(res, 200, { signedIn, admin: who === 'admin', id: me?.id || null, name: who === 'admin' ? 'Admin' : me?.name || null, needsSetup: !C.admin.hash, version: VERSION });
+    if (route === 'GET /api/session') return json(res, 200, { signedIn, admin: who === 'admin', demoViewer: who === 'demo', demo: demoOn(), id: me?.id || null, name: who === 'admin' ? 'Admin' : who === 'demo' ? 'Demo' : me?.name || null, needsSetup: !C.admin.hash, version: VERSION });
+    // demo mode: anyone may look at the MADE-UP family without a password (real data is never shown to a demo session)
+    if (route === 'POST /api/demo') {
+      if (!demoOn()) return fail(res, 404, 'demo mode is off');
+      return json(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(req, sessions.create('demo'), 86400) });
+    }
     if (route === 'POST /api/setup') {
       if (C.admin.hash) return fail(res, 409, 'already set up');
       if (loginFails.blocked(ip)) return fail(res, 429, 'Too many tries - wait 10 minutes');
@@ -274,14 +304,23 @@ export function createServer(opts = {}) {
     if (!signedIn) return fail(res, 401, 'sign in');
 
     const s = S();
+    const dw = demoWorld();
+    if (who === 'demo' && !['GET /api/map', 'GET /api/track', 'GET /api/feed'].includes(route)) return fail(res, 403, 'demo: look only');
     if (route === 'GET /api/map') {
+      const st = resolveStyles(s);
+      const map = { styles: st.styles, defaultStyle: st.default, satellite: st.satellite, satelliteNote: st.note, maxZoom: s.maxZoom };
+      if (dw) return json(res, 200, { me: who === 'admin' ? 'admin' : who === 'demo' ? 'demo' : me.id, demo: true, map, timeZone: tz(), retentionDays: s.retentionDays, ...dw.map(), now: now() });
       return json(res, 200, {
         me: who === 'admin' ? 'admin' : me.id,
-        map: { tileUrl: s.tileUrl, attribution: s.tileAttribution, attributionUrl: s.tileAttributionUrl, maxZoom: s.maxZoom },
-        timeZone: tz(), retentionDays: s.retentionDays,
+        map, timeZone: tz(), retentionDays: s.retentionDays,
         people: C.people.map(publicPerson), places: C.places.map(publicPlace), feed: visibleFeed(), now: now(),
       });
     }
+    if (dw && route === 'GET /api/track') {
+      const t = dw.track(u.searchParams.get('person'), u.searchParams.get('date'));
+      return json(res, 200, t ? { person: u.searchParams.get('person'), ...t } : { points: [] });
+    }
+    if (dw && route === 'GET /api/feed') return json(res, 200, { feed: dw.feed(300), demo: true });
     if (route === 'GET /api/track') {
       const p = person(u.searchParams.get('person'));
       if (!p || !visible(p)) return json(res, 200, { points: [] });
@@ -320,7 +359,10 @@ export function createServer(opts = {}) {
         return json(res, 200, {
           people: C.people.map(p => ({ id: p.id, user: p.user, name: p.name, tid: p.tid, color: p.color, hasPassword: !!p.passwordHash, encrypt: !!p.encrypt, paused: !!p.paused, quiet: p.quiet || null, days: store.days(p.id).length, devices: (p.devices || []).map(d => ({ id: d.id, name: d.name, lastSeen: d.lastSeen || null, plaintextRefused: !!d.plaintextRefused })) })),
           places: C.places.map(publicPlace), rules: C.rules, ruleTypes: RULE_TYPES,
-          settings: { ...s, discordWebhook: undefined, ntfyToken: undefined, discordWebhookSet: validUrl(s.discordWebhook), ntfyTokenSet: !!s.ntfyToken },
+          settings: { ...s, discordWebhook: undefined, ntfyToken: undefined, esriKey: undefined, maptilerKey: undefined, discordWebhookSet: validUrl(s.discordWebhook), ntfyTokenSet: !!s.ntfyToken, esriKeySet: !!s.esriKey, maptilerKeySet: !!s.maptilerKey },
+          satellites: SATELLITES.map(id => ({ id, name: PROVIDERS[id].name, key: PROVIDERS[id].key || null, help: KEY_HELP[id] || null, attribution: PROVIDERS[id].attribution })),
+          demo: { on: demoOn(), fromEnv: !!cfg.demo },
+          tiles: { ...tileCache.stats },
         });
       }
       if (route === 'POST /api/admin/person') {
@@ -416,13 +458,30 @@ export function createServer(opts = {}) {
         if (body.maxZoom !== undefined) { n.maxZoom = fin(body.maxZoom, 1, 22); if (n.maxZoom == null) throw new Error('max zoom 1-22'); }
         if (body.publicUrl !== undefined) { const t = str(body.publicUrl, 200).replace(/\/+$/, ''); if (t && !/^https?:\/\/[a-z0-9.\-]+(:\d+)?$/i.test(t)) throw new Error('public address looks like https://places.example.com'); n.publicUrl = t; }
         if (body.timeZone !== undefined) { if (!validTz(body.timeZone)) throw new Error('unknown time zone'); n.timeZone = body.timeZone; }
-        for (const [k, lo, hi] of [['maxAccuracy', 10, 2000], ['leaveMinutes', 1, 60], ['leaveMeters', 50, 5000], ['cooldownMinutes', 0, 1440]]) if (body[k] !== undefined) { n[k] = fin(body[k], lo, hi); if (n[k] == null) throw new Error(`${k}: ${lo}-${hi}`); }
+        for (const [k, lo, hi] of [['maxAccuracy', 10, 2000], ['leaveMinutes', 1, 60], ['leaveMeters', 50, 5000], ['cooldownMinutes', 0, 1440], ['arriveMinutes', 0, 30], ['exitFactor', 1, 4], ['exitExtra', 0, 1000], ['tileCacheMB', 20, 20000]]) if (body[k] !== undefined) { n[k] = fin(body[k], lo, hi); if (n[k] == null) throw new Error(`${k}: ${lo}-${hi}`); }
+        if (body.holidays !== undefined) {
+          const list = (Array.isArray(body.holidays) ? body.holidays : String(body.holidays).split(/[\s,;]+/)).map(x => String(x).trim()).filter(Boolean);
+          if (list.length > 200 || list.some(x => !/^\d{4}-\d{2}-\d{2}$/.test(x) || Number.isNaN(Date.parse(x + 'T00:00:00Z')))) throw new Error('holidays: dates like 2026-12-24, separated by spaces or commas');
+          n.holidays = [...new Set(list)].sort();
+        }
+        if (body.mapStyle !== undefined) { if (!STYLES.includes(body.mapStyle)) throw new Error('map style: street, satellite or hybrid'); n.mapStyle = body.mapStyle; }
+        if (body.esriKey !== undefined) n.esriKey = str(body.esriKey, 400).replace(/[^A-Za-z0-9._\-~]/g, '');
+        if (body.maptilerKey !== undefined) n.maptilerKey = str(body.maptilerKey, 200).replace(/[^A-Za-z0-9._\-~]/g, '');
+        if (body.satellite !== undefined) {
+          if (!SATELLITES.includes(body.satellite)) throw new Error('unknown satellite source');
+          const k = PROVIDERS[body.satellite].key;
+          if (k && !n[k]) throw new Error(`${PROVIDERS[body.satellite].name}: paste its key first`);
+          n.satellite = body.satellite;
+        }
+        if (body.tileCache !== undefined) n.tileCache = !!body.tileCache;
+        if (body.demo !== undefined) n.demo = !!body.demo;
         if (body.discordWebhook !== undefined) { const t = str(body.discordWebhook, 500); if (t && !validUrl(t)) throw new Error('Discord webhook URL'); n.discordWebhook = t; }
         if (body.ntfyServer !== undefined) { const t = str(body.ntfyServer, 200).replace(/\/+$/, '') || 'https://ntfy.sh'; if (!validUrl(t)) throw new Error('ntfy server'); n.ntfyServer = t; }
         if (body.ntfyTopic !== undefined) { const t = str(body.ntfyTopic, 64); if (t && !/^[A-Za-z0-9_-]+$/.test(t)) throw new Error('ntfy topic: letters, digits, - and _'); n.ntfyTopic = t; }
         if (body.ntfyToken !== undefined) n.ntfyToken = str(body.ntfyToken, 200);
         if (body.familyInOwnTracks !== undefined) n.familyInOwnTracks = !!body.familyInOwnTracks;
         C.settings = n; store.saveConfig();
+        demoWorld();   // starts or stops the made-up family right away
         return json(res, 200, { ok: true });
       }
       if (route === 'POST /api/admin/test-push') {
@@ -451,6 +510,17 @@ export function createServer(opts = {}) {
       if (u.pathname === '/pub' || u.pathname === '/pub/') return await handlePub(req, res);
       if (u.pathname.startsWith('/api/')) return await handleApi(req, res, u);
       if (u.pathname === '/healthz') return json(res, 200, { ok: true, app: 'Hallow Places', version: VERSION, uptime: Math.round(process.uptime()) });
+      if (u.pathname.startsWith('/tiles/')) {
+        // the tile cache, for signed-in browsers only (also demo viewers) - never an open proxy
+        const sess = sessions.get(cookie(req, 'hp_session'));
+        if (!sess || (sess.who === 'demo' && !demoOn())) { res.writeHead(401, headers('text/plain; charset=utf-8')); return res.end(); }
+        const m = /^\/tiles\/([a-zA-Z]+)\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/.exec(u.pathname);
+        if (!m || req.method !== 'GET' || S().tileCache === false) { res.writeHead(404, headers('text/plain; charset=utf-8')); return res.end(); }
+        const r = await tileCache.get(m[1], Number(m[2]), Number(m[3]), Number(m[4]));
+        if (r.status !== 200) { res.writeHead(r.status, headers('text/plain; charset=utf-8')); return res.end(); }
+        res.writeHead(200, headers(r.type, { 'Cache-Control': 'private, max-age=86400' }));
+        return res.end(r.body);
+      }
       if (u.pathname.startsWith('/otrc/')) {
         const id = u.pathname.slice(6), d = downloads.get(id);
         if (!d || d.expires < now()) { downloads.delete(id); res.writeHead(410, headers('text/plain; charset=utf-8')); return res.end('This setup link has expired. Make a new one on the Hallow Places page.'); }
@@ -476,11 +546,13 @@ export function createServer(opts = {}) {
   const sweep = () => {
     try { const n = store.sweep(S().retentionDays, localTime(now(), tz()).date); if (n) log(`retention: removed ${n} old day file(s)`); } catch (e) { log('retention error:', e.message); }
     for (const [k, d] of downloads) if (d.expires < now()) downloads.delete(k);
+    try { const t = tileCache.trim(S().tileCacheMB || 500); if (t.removed) log(`tiles: trimmed ${t.removed} old tile(s) from the cache`); } catch (e) { log('tile cache error:', e.message); }
   };
   const t1 = setInterval(tick, opts.tickMs || 60000); t1.unref?.();
   const t2 = setInterval(sweep, opts.sweepMs || 3600000); t2.unref?.();
   sweep();
-  server.on('close', () => { clearInterval(t1); clearInterval(t2); store.flush(); });
+  server.on('close', () => { clearInterval(t1); clearInterval(t2); demo?.stop(); store.flush(); });
+  demoWorld();
 
   return {
     server, store, engine, cfg, setupCode, tick, sweep,
@@ -495,7 +567,7 @@ function validTz(z) { try { new Intl.DateTimeFormat('en', { timeZone: String(z) 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const cfg = config();
   const app = createServer(cfg);
-  app.listen().then(p => console.log(`Hallow Places ${VERSION} on ${cfg.host}:${p}, data in ${cfg.dataDir}` + (app.store.config.settings.publicUrl ? ` (public address ${app.store.config.settings.publicUrl})` : '')));
+  app.listen().then(p => console.log(`Hallow Places ${VERSION} on ${cfg.host}:${p}, data in ${cfg.dataDir}` + (app.store.config.settings.publicUrl ? ` (public address ${app.store.config.settings.publicUrl})` : '') + (cfg.demo || app.store.config.settings.demo ? ' - DEMO MODE: the map shows a made-up family (open the page and choose "Look at the demo")' : '')));
   const stop = () => app.close().then(() => process.exit(0));
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
 }
