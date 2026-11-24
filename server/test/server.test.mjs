@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createServer } from '../server.js';
+import { createServer, VERSION } from '../server.js';
 import { encryptOwnTracks, decryptOwnTracks } from '../lib/secretbox.js';
 import { HOME, offset } from './helpers.mjs';
 
@@ -39,7 +39,9 @@ let admin, mia, miaToken, leoToken;
 
 test('health, static files and security headers', async () => {
   const h = await call('GET', '/healthz');
-  assert.equal(h.json.ok, true); assert.equal(h.json.version, '1.1');
+  // not pinned to one release: the server's own VERSION, and it matches package.json (1.1 <-> 1.1.0)
+  const pkgVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.equal(h.json.ok, true); assert.equal(h.json.version, VERSION); assert.equal(VERSION.replace(/^(\d+\.\d+)$/, '$1.0'), pkgVersion);
   const page = await call('GET', '/');
   assert.equal(page.status, 200); assert.match(page.text, /app\.js/);
   assert.match(page.headers.get('content-security-policy'), /img-src 'self' data:;/, 'OpenStreetMap and EOxCloudless come through the tile cache');
